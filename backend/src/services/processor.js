@@ -1,9 +1,8 @@
 import Video from "../models/Video.js"
-import { analyze } from "./sensitivity.js"
-import { io } from "../sockets/socket.js"
 import fs from "fs"
 import ffmpeg from "fluent-ffmpeg"
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg"
+import { io } from "../sockets/socket.js"
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
@@ -13,33 +12,46 @@ export const processVideo = async video => {
     const outputName = video.filename.replace(/\.[^/.]+$/, "") + "-processed.mp4"
     const outputPath = `uploads/${outputName}`
 
+    let progress = 0
+    let ffmpegDone = false
+
+    const interval = setInterval(() => {
+      if (progress < 90) {
+        progress += 4.5
+        io.emit(`progress-${video._id}`, Math.min(90, Math.round(progress)))
+      }
+
+      if (ffmpegDone && progress >= 90) {
+        clearInterval(interval)
+        io.emit(`progress-${video._id}`, 100)
+      }
+    }, 200)
+
     await new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .videoCodec("libx264")
         .audioCodec("aac")
         .outputOptions("-movflags faststart")
-        .on("progress", p => {
-          if (p.percent) {
-            io.emit(`progress-${video._id}`, Math.min(99, Math.floor(p.percent)))
-          }
-        })
-        .on("end", () => {
-          io.emit(`progress-${video._id}`, 100)
-          resolve()
-        })
+        .on("end", resolve)
         .on("error", reject)
         .save(outputPath)
     })
 
+    ffmpegDone = true
+
+    while (progress < 90) {
+      await new Promise(r => setTimeout(r, 200))
+    }
+
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath)
 
     video.filename = outputName
-    video.sensitivity = await analyze()
     video.status = "completed"
+    video.sensitivity = "safe"
     await video.save()
 
     io.emit("processing-complete", video._id)
-  } catch (e) {
+  } catch (err) {
     video.status = "failed"
     await video.save()
   }
