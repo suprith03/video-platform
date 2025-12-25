@@ -5,4 +5,4 @@ import { initSocket } from "./sockets/socket.js"
 const server = http.createServer(app)
 initSocket(server)
 
-server.listen(process.env.PORT)
+server.listen(process.env.PORT || 5001)
