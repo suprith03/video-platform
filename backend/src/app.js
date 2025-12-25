@@ -16,4 +16,8 @@ app.use("/uploads", express.static("uploads"))
 app.use("/api/auth", authRoutes)
 app.use("/api/videos", videoRoutes)
 
+mongoose.connection.once("open", () => {
+  console.log("MongoDB connected")
+})
+
 export default app
