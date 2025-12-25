@@ -1,8 +1,14 @@
 import mongoose from "mongoose"
 
-export default mongoose.model("User", new mongoose.Schema({
-  email: String,
-  password: String,
-  role: { type: String, enum: ["viewer", "editor", "admin"] },
-  tenantId: String
-}))
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: {
+    type: String,
+    enum: ["viewer", "editor", "admin"],
+    required: true
+  },
+  tenantId: { type: String, required: true }
+})
+
+export default mongoose.model("User", userSchema)

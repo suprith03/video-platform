@@ -1,10 +1,10 @@
-import React from "react"
+import React, { useEffect, useRef, useState } from "react"
 import axios from "axios"
-import { useEffect, useState } from "react"
 import { io } from "socket.io-client"
 
 export default function Dashboard() {
   const [videos, setVideos] = useState([])
+  const [users, setUsers] = useState([])
   const [file, setFile] = useState(null)
   const [progress, setProgress] = useState({})
 
@@ -12,43 +12,80 @@ export default function Dashboard() {
   const payload = JSON.parse(atob(token.split(".")[1]))
   const role = payload.role
 
-  const socket = io("http://localhost:5001")
+  const socketRef = useRef(null)
 
   useEffect(() => {
-    fetchVideos()
+    socketRef.current = io("http://localhost:5001")
 
-    socket.on("processing-complete", () => {
+    socketRef.current.on("processing-complete", id => {
+      setProgress(p => {
+        const copy = { ...p }
+        delete copy[id]
+        return copy
+      })
       fetchVideos()
     })
 
-    return () => socket.disconnect()
+    fetchVideos()
+    if (role === "admin") fetchUsers()
+
+    return () => socketRef.current.disconnect()
   }, [])
 
   const fetchVideos = async () => {
     const res = await axios.get("http://localhost:5001/api/videos", {
       headers: { Authorization: `Bearer ${token}` }
     })
-
     setVideos(res.data)
+  }
 
-    res.data.forEach(v => {
-      socket.on(`progress-${v._id}`, p => {
-        setProgress(prev => ({ ...prev, [v._id]: p }))
-      })
+  const fetchUsers = async () => {
+    const res = await axios.get("http://localhost:5001/api/users", {
+      headers: { Authorization: `Bearer ${token}` }
     })
+    setUsers(res.data.filter(u => u.role === "viewer"))
   }
 
   const upload = async () => {
-    if (!file) return
+    if (!file || !file.type.startsWith("video/")) {
+      alert("Only video files are allowed")
+      return
+    }
 
     const form = new FormData()
     form.append("video", file)
 
-    await axios.post("http://localhost:5001/api/videos", form, {
-      headers: { Authorization: `Bearer ${token}` }
+    const res = await axios.post(
+      "http://localhost:5001/api/videos",
+      form,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+
+    const v = res.data
+
+    socketRef.current.on(`progress-${v._id}`, p => {
+      setProgress(prev => ({ ...prev, [v._id]: p }))
     })
 
+    setVideos(list => [v, ...list])
     setFile(null)
+  }
+
+  const assign = async (videoId, userId) => {
+    if (!userId) return
+    await axios.post(
+      `http://localhost:5001/api/videos/${videoId}/assign`,
+      { userId },
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    fetchVideos()
+  }
+
+  const remove = async id => {
+    await axios.delete(
+      `http://localhost:5001/api/videos/${id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
     fetchVideos()
   }
 
@@ -58,146 +95,86 @@ export default function Dashboard() {
   }
 
   return (
-    <div style={styles.page}>
-      <header style={styles.header}>
-        <h2>Video Platform Dashboard</h2>
-        <button onClick={logout} style={styles.logout}>Logout</button>
-      </header>
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <h2>Dashboard</h2>
+        <button onClick={logout}>Logout</button>
+      </div>
 
       {role !== "viewer" && (
-        <section style={styles.section}>
-          <h3>Upload Video</h3>
+        <div style={{ marginBottom: 20 }}>
           <input
             type="file"
             accept="video/*"
             onChange={e => setFile(e.target.files[0])}
           />
-          <button style={styles.uploadBtn} onClick={upload}>
+          <button onClick={upload} style={{ marginLeft: 10 }}>
             Upload
           </button>
-        </section>
+        </div>
       )}
 
-      <section style={styles.section}>
-        <h3>Your Videos</h3>
+      {videos.map(v => (
+        <div
+          key={v._id}
+          style={{ padding: 12, border: "1px solid #ccc", marginBottom: 12 }}
+        >
+          <div><b>{v.filename}</b></div>
 
-        {videos.length === 0 && <p>No videos uploaded yet</p>}
-
-        {videos.map(v => (
-          <div key={v._id} style={styles.videoCard}>
-            <div><strong>File:</strong> {v.filename}</div>
-
-            <div style={styles.badges}>
-              <span style={badgeStyle(v.status === "completed" ? "done" : "processing")}>
-                {v.status.toUpperCase()}
-              </span>
-
-              {v.sensitivity && (
-                <span style={badgeStyle(v.sensitivity)}>
-                  {v.sensitivity.toUpperCase()}
-                </span>
-              )}
-            </div>
-
-            {progress[v._id] && v.status !== "completed" && (
-              <div style={styles.progressBar}>
-                <div
-                  style={{
-                    ...styles.progressFill,
-                    width: `${progress[v._id]}%`
-                  }}
-                >
-                  {progress[v._id]}%
-                </div>
+          {progress[v._id] !== undefined && (
+            <div style={{ background: "#eee", marginTop: 6 }}>
+              <div
+                style={{
+                  width: `${progress[v._id]}%`,
+                  background: "#4ade80",
+                  textAlign: "center"
+                }}
+              >
+                {progress[v._id]}%
               </div>
-            )}
+            </div>
+          )}
 
-            {v.status === "completed" && (
-              <video
-                width="360"
-                controls
-                src={`http://localhost:5001/api/videos/stream/${v._id}?token=${token}`}
-              />
-            )}
-          </div>
-        ))}
-      </section>
+          {v.status === "completed" && (
+            <video
+              controls
+              width="320"
+              style={{ marginTop: 8 }}
+              src={`http://localhost:5001/api/videos/stream/${v._id}?token=${token}`}
+            />
+          )}
+
+          {role === "admin" && (
+            <div style={{ marginTop: 8 }}>
+              <div>
+                Assigned:{" "}
+                {v.assignedUsers?.length
+                  ? v.assignedUsers.map(u => u.email).join(", ")
+                  : "None"}
+              </div>
+
+              <select
+                onChange={e => assign(v._id, e.target.value)}
+                style={{ marginTop: 6 }}
+              >
+                <option value="">Assign viewer</option>
+                {users.map(u => (
+                  <option key={u._id} value={u._id}>
+                    {u.email}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={() => remove(v._id)}
+                style={{ marginLeft: 10 }}
+              >
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
-}
-
-const badgeStyle = type => {
-  const map = {
-    safe: { background: "#16a34a" },
-    flagged: { background: "#dc2626" },
-    processing: { background: "#2563eb" },
-    done: { background: "#4b5563" }
-  }
-
-  return {
-    color: "#fff",
-    padding: "4px 8px",
-    borderRadius: "4px",
-    fontSize: "12px",
-    marginRight: "8px",
-    ...map[type]
-  }
-}
-
-const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "#f4f6f8",
-    padding: "20px"
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "20px"
-  },
-  logout: {
-    background: "#dc2626",
-    color: "#fff",
-    border: "none",
-    padding: "8px 12px",
-    borderRadius: "4px",
-    cursor: "pointer"
-  },
-  section: {
-    background: "#fff",
-    padding: "20px",
-    borderRadius: "6px",
-    marginBottom: "20px",
-    boxShadow: "0 2px 6px rgba(0,0,0,0.08)"
-  },
-  uploadBtn: {
-    marginLeft: "10px",
-    padding: "6px 12px",
-    cursor: "pointer"
-  },
-  videoCard: {
-    padding: "14px",
-    borderRadius: "6px",
-    background: "#f9fafb",
-    marginBottom: "12px"
-  },
-  badges: {
-    marginTop: "6px",
-    marginBottom: "6px"
-  },
-  progressBar: {
-    width: "100%",
-    background: "#e5e7eb",
-    borderRadius: "4px",
-    marginTop: "8px"
-  },
-  progressFill: {
-    height: "20px",
-    background: "#2563eb",
-    color: "#fff",
-    textAlign: "center",
-    borderRadius: "4px",
-    fontSize: "12px"
-  }
 }
